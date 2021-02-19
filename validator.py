@@ -25,6 +25,19 @@ def _build_name_mapping(roots):
     return mapping
 
 
+def _build_key_mapping(roots):
+    mapping = {}
+    for root in roots:
+        try:
+            ski = root.extensions.get_extension_for_class(
+                x509.SubjectKeyIdentifier
+            ).value
+        except x509.ExtensionNotFound:
+            continue
+        mapping[ski.digest] = root
+    return mapping
+
+
 def _hostname_matches(hostname, cert_hostname):
     hostname_prefix, hostname_rest = hostname.split(".", 1)
     cert_hostname_prefix, cert_hostname_rest = cert_hostname.split(".", 1)
@@ -57,6 +70,7 @@ class ValidationContext(object):
         self.extended_key_usage = extended_key_usage
         self.extra_certs = extra_certs
         self._extra_certs_by_name = _build_name_mapping(extra_certs)
+        self._extra_certs_by_key = _build_key_mapping(extra_certs)
         self.timestamp = datetime.datetime.utcnow()
 
 
@@ -69,6 +83,7 @@ class X509Validator(object):
     def __init__(self, roots):
         self._roots = roots
         self._roots_by_name = _build_name_mapping(roots)
+        self._roots_by_key = _build_key_mapping(roots)
 
         self._http_session = requests.session()
 
@@ -84,6 +99,16 @@ class X509Validator(object):
         raise ValidationError
 
     def _find_potential_issuers(self, cert, ctx):
+        try:
+            aki = cert.extensions.get_extension_for_class(
+                x509.AuthorityKeyIdentifier
+            ).value.key_identifier
+            if aki in ctx._extra_certs_by_key:
+                yield ctx._extra_certs_by_key[aki]
+            if aki in self._roots_by_key:
+                yield self._roots_by_key[aki]
+        except x509.ExtensionNotFound:
+            pass
         for issuer in ctx._extra_certs_by_name.get(cert.issuer, []):
             yield issuer
         for issuer in self._roots_by_name.get(cert.issuer, []):
